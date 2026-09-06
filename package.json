@@ -1,0 +1,16 @@
+{
+  "name": "appguard-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "nodemailer": "^6.9.14",
+    "twilio": "^5.2.2",
+    "dotenv": "^16.4.5"
+  }
+}

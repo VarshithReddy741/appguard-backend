@@ -41,20 +41,28 @@ function randomCode() {
 
 // --- notification senders -------------------------------------------------
 
+// Sent over Brevo's HTTPS API rather than raw SMTP -- most free hosts
+// (Render included) block outbound SMTP ports (25/465/587) to stop abuse,
+// which makes SMTP sending hang until it times out.
 async function sendEmail(to, subject, text) {
-  const nodemailer = require('nodemailer');
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: Number(process.env.SMTP_PORT) === 465,
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'api-key': process.env.BREVO_API_KEY,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      sender: { email: process.env.SMTP_FROM, name: 'AppGuard' },
+      to: [{ email: to }],
+      subject,
+      textContent: text,
+    }),
   });
-  await transporter.sendMail({
-    from: process.env.SMTP_FROM || process.env.SMTP_USER,
-    to,
-    subject,
-    text,
-  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Brevo send failed (${res.status}): ${body}`);
+  }
 }
 
 async function sendSms(to, body) {

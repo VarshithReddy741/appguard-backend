@@ -20,6 +20,19 @@ const path = require('path');
 const app = express();
 app.use(express.json());
 
+// The Android app isn't subject to browser CORS rules, but the Chrome
+// extension's fetch() calls are -- without this, the browser blocks the
+// response (and the preflight OPTIONS request for JSON POSTs) before it ever
+// reaches the extension's code. This is a personal single-user/one-friend
+// backend, so allowing any origin is fine here.
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 const DB_PATH = path.join(__dirname, 'data.json');
 const CODE_TTL_MS = 10 * 60 * 1000; // code expires 10 minutes after being sent
 const DEFAULT_UNLOCK_MINUTES = 15;

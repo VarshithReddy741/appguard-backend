@@ -183,5 +183,95 @@ app.post('/api/verify-unlock', requireDevice, (req, res) => {
   res.json({ granted: true, target: request.target, unlockUntil });
 });
 
+// --- Google Tasks (used to gate unlocks on pending tasks) ------------------
+//
+// One-time setup: create OAuth credentials at
+// https://console.cloud.google.com/apis/credentials (type "Web application"),
+// enable the Tasks API for that project, and set GOOGLE_CLIENT_ID,
+// GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI (https://<your-host>/auth/google/callback)
+// and ADMIN_TOKEN in .env. Then visit /auth/google?token=<ADMIN_TOKEN> in a
+// browser once to grant access; the refresh token is stored in data.json.
+
+const { google } = require('googleapis');
+
+function requireAdmin(req, res, next) {
+  if (!process.env.ADMIN_TOKEN || req.query.token !== process.env.ADMIN_TOKEN) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  next();
+}
+
+function googleOAuthClient() {
+  return new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI
+  );
+}
+
+app.get('/auth/google', requireAdmin, (req, res) => {
+  const oauth2Client = googleOAuthClient();
+  const url = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'consent', // forces a refresh_token even on repeat authorizations
+    scope: ['https://www.googleapis.com/auth/tasks.readonly'],
+    state: process.env.ADMIN_TOKEN,
+  });
+  res.redirect(url);
+});
+
+app.get('/auth/google/callback', async (req, res) => {
+  const { code, state } = req.query;
+  if (!process.env.ADMIN_TOKEN || state !== process.env.ADMIN_TOKEN) {
+    return res.status(401).send('unauthorized');
+  }
+  try {
+    const oauth2Client = googleOAuthClient();
+    const { tokens } = await oauth2Client.getToken(code);
+    const db = loadDb();
+    db.google = { ...db.google, ...tokens };
+    saveDb(db);
+    res.send('Google Tasks connected. You can close this tab.');
+  } catch (err) {
+    console.error('google oauth callback failed', err);
+    res.status(500).send('failed to connect Google Tasks');
+  }
+});
+
+async function googleTasksClient() {
+  const db = loadDb();
+  if (!db.google || !db.google.refresh_token) {
+    throw new Error('Google Tasks not connected yet -- visit /auth/google first');
+  }
+  const oauth2Client = googleOAuthClient();
+  oauth2Client.setCredentials(db.google);
+  oauth2Client.on('tokens', (tokens) => {
+    const freshDb = loadDb();
+    freshDb.google = { ...freshDb.google, ...tokens };
+    saveDb(freshDb);
+  });
+  return google.tasks({ version: 'v1', auth: oauth2Client });
+}
+
+// Test route: confirms the connection works by returning your task lists and
+// their (incomplete) tasks.
+app.get('/api/tasks', requireAdmin, async (req, res) => {
+  try {
+    const tasks = await googleTasksClient();
+    const { data: listsData } = await tasks.tasklists.list();
+    const lists = listsData.items || [];
+    const withTasks = await Promise.all(
+      lists.map(async (list) => {
+        const { data } = await tasks.tasks.list({ tasklist: list.id, showCompleted: false });
+        return { id: list.id, title: list.title, tasks: (data.items || []).map((t) => t.title) };
+      })
+    );
+    res.json({ taskLists: withTasks });
+  } catch (err) {
+    console.error('fetch tasks failed', err);
+    res.status(502).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`AppGuard backend listening on :${PORT}`));

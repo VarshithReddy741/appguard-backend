@@ -183,6 +183,23 @@ app.post('/api/verify-unlock', requireDevice, (req, res) => {
   res.json({ granted: true, target: request.target, unlockUntil });
 });
 
+// Phone reports it's had Accessibility (app blocking) turned off long enough
+// that the watchdog gave up waiting -- tell the trusted contact directly,
+// since nothing else stops the phone's owner from just leaving it off.
+app.post('/api/notify-accessibility-off', requireDevice, async (req, res) => {
+  try {
+    await notifyFriend(
+      req.device,
+      'AppGuard protection is off',
+      `${req.device.label} turned off app blocking (Accessibility) and hasn't turned it back on, even after being reminded.`
+    );
+  } catch (err) {
+    console.error('notify failed', err);
+    return res.status(502).json({ error: 'failed to notify trusted contact' });
+  }
+  res.json({ notified: true });
+});
+
 // --- Google Tasks (used to gate unlocks on pending tasks) ------------------
 //
 // One-time setup: create OAuth credentials at
@@ -253,23 +270,41 @@ async function googleTasksClient() {
   return google.tasks({ version: 'v1', auth: oauth2Client });
 }
 
+async function fetchTaskLists() {
+  const tasks = await googleTasksClient();
+  const { data: listsData } = await tasks.tasklists.list();
+  const lists = listsData.items || [];
+  return Promise.all(
+    lists.map(async (list) => {
+      const { data } = await tasks.tasks.list({ tasklist: list.id, showCompleted: false });
+      return { id: list.id, title: list.title, tasks: (data.items || []).map((t) => t.title) };
+    })
+  );
+}
+
 // Test route: confirms the connection works by returning your task lists and
 // their (incomplete) tasks.
 app.get('/api/tasks', requireAdmin, async (req, res) => {
   try {
-    const tasks = await googleTasksClient();
-    const { data: listsData } = await tasks.tasklists.list();
-    const lists = listsData.items || [];
-    const withTasks = await Promise.all(
-      lists.map(async (list) => {
-        const { data } = await tasks.tasks.list({ tasklist: list.id, showCompleted: false });
-        return { id: list.id, title: list.title, tasks: (data.items || []).map((t) => t.title) };
-      })
-    );
-    res.json({ taskLists: withTasks });
+    res.json({ taskLists: await fetchTaskLists() });
   } catch (err) {
     console.error('fetch tasks failed', err);
     res.status(502).json({ error: err.message });
+  }
+});
+
+// Phone asks: "what's still pending?" -- shown on the lock screen so the
+// user sees their open tasks before deciding whether to request an unlock.
+// Device-authenticated (not ADMIN_TOKEN) since the phone itself calls this.
+// If Google Tasks was never connected, respond with an empty list rather
+// than an error so the lock screen just skips the section.
+app.post('/api/pending-tasks', requireDevice, async (req, res) => {
+  try {
+    const taskLists = await fetchTaskLists();
+    const titles = taskLists.flatMap((list) => list.tasks);
+    res.json({ tasks: titles });
+  } catch (err) {
+    res.json({ tasks: [] });
   }
 });
 
